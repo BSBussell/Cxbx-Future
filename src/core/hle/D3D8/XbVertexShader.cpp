@@ -81,6 +81,22 @@ static xbox::X_D3DVertexShader g_Xbox_VertexShader_ForFVF = {};
 static uint32_t                g_X_VERTEXSHADER_FLAG_PROGRAM; // X_VERTEXSHADER_FLAG_PROGRAM flag varies per XDK, so it is set on runtime
 static uint32_t                g_X_VERTEXSHADER_FLAG_VALID_MASK; // For a test case
 
+// HLE setters and vertex state shaders own this copy. Push buffer processing
+// also writes NV2A's PGRAPH registers, so sharing them lets it overwrite HLE
+// constants between draws (for example, JSRF's white flashes).
+static std::array<float, X_D3DVS_CONSTREG_COUNT * 4> g_HleVertexShaderConstants = {};
+static std::array<bool, X_D3DVS_CONSTREG_COUNT> g_HleVertexShaderConstantsDirty = {};
+
+float* CxbxGetHleVertexShaderConstants()
+{
+	return g_HleVertexShaderConstants.data();
+}
+
+bool* CxbxGetHleVertexShaderConstantsDirtyFlags()
+{
+	return g_HleVertexShaderConstantsDirty.data();
+}
+
 void CxbxVertexShaderSetFlags()
 {
 	// Set an appropriate X_VERTEXSHADER_FLAG_PROGRAM version and mask off the "wrong" one
@@ -1571,21 +1587,25 @@ void CxbxImpl_SetVertexShaderConstant(INT Register, PVOID pConstantData, DWORD C
 
 	// Xbox vertex shader constants range from -96 to 95
 	// The host does not support negative, so we adjust to 0..191
+	if (Register < -X_D3DSCM_CORRECTION || Register >= X_D3DVS_CONSTREG_COUNT - X_D3DSCM_CORRECTION) {
+		LOG_TEST_CASE("Vertex shader constant register out of bounds");
+		return;
+	}
 	Register += X_D3DSCM_CORRECTION;
+	const DWORD availableConstantCount = X_D3DVS_CONSTREG_COUNT - Register;
+	if (ConstantCount > availableConstantCount) {
+		LOG_TEST_CASE("Vertex shader constant count out of bounds");
+		ConstantCount = availableConstantCount;
+	}
+	if (ConstantCount == 0) {
+		return;
+	}
 
-	if (Register < 0) LOG_TEST_CASE("Register < 0");
-	if (Register + ConstantCount > X_D3DVS_CONSTREG_COUNT) LOG_TEST_CASE("Register + ConstantCount > X_D3DVS_CONSTREG_COUNT");
-
-	// Write Vertex Shader constants in nv2a
-	extern float* HLE_get_NV2A_vertex_constant_float4_ptr(unsigned const_index); // TMP glue
-	float* constant_floats = HLE_get_NV2A_vertex_constant_float4_ptr(Register);
-	memcpy(constant_floats, pConstantData, ConstantCount * sizeof(float) * 4);
+	memcpy(&g_HleVertexShaderConstants[Register * 4], pConstantData, ConstantCount * sizeof(float) * 4);
 
 	// Mark the constant as dirty, so that CxbxUpdateHostVertexShaderConstants will pick it up
-	extern NV2ADevice* g_NV2A; // TMP glue
-	auto nv2a = g_NV2A->GetDeviceState();
 	for (DWORD i = 0; i < ConstantCount; i++) {
-		nv2a->pgraph.vsh_constants_dirty[Register + i] = true;
+		g_HleVertexShaderConstantsDirty[Register + i] = true;
 	}
 }
 

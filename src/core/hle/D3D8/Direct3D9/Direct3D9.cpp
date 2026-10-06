@@ -7398,12 +7398,13 @@ void CxbxUpdateDirtyVertexShaderConstants(const float* constants, bool* dirty) {
 
 	// Send the final batch
 	if (batchStartIndex != -1) {
-		int count = X_D3DVS_CONSTREG_COUNT - batchStartIndex + 1;
+		// The end is exclusive; uploading one more would overwrite the first
+		// host-only vertex attribute constant and read beyond the HLE buffer.
+		int count = X_D3DVS_CONSTREG_COUNT - batchStartIndex;
 		g_pD3DDevice->SetVertexShaderConstantF(batchStartIndex, &constants[batchStartIndex * 4], count);
 	}
 }
 
-extern float* HLE_get_NV2A_vertex_constant_float4_ptr(unsigned const_index); // TMP glue
 // TODO : Once we're able to flush the NV2A push buffer
 // remove our patches on D3DDevice_SetVertexShaderConstant (and CxbxImpl_SetVertexShaderConstant)
 void CxbxUpdateHostVertexShaderConstants()
@@ -7424,17 +7425,20 @@ void CxbxUpdateHostVertexShaderConstants()
 		isXboxConstants = false;
 	}
 	else {
-		// Write Xbox constants
-		auto pg = &(g_NV2A->GetDeviceState()->pgraph);
-		auto constant_floats = (float*)pg->vsh_constants;
+		// Write Xbox constants (HLE's own copy, see CxbxImpl_SetVertexShaderConstant)
+		auto constant_floats = CxbxGetHleVertexShaderConstants();
+		auto dirty_flags = CxbxGetHleVertexShaderConstantsDirtyFlags();
 
 		if (isXboxConstants) {
 			// Only need to overwrite what's changed
-			CxbxUpdateDirtyVertexShaderConstants(constant_floats, pg->vsh_constants_dirty);
+			CxbxUpdateDirtyVertexShaderConstants(constant_floats, dirty_flags);
 		}
 		else {
 			// We need to update everything
 			g_pD3DDevice->SetVertexShaderConstantF(0, constant_floats, X_D3DVS_CONSTREG_COUNT);
+			for (int i = 0; i < X_D3DVS_CONSTREG_COUNT; i++) {
+				dirty_flags[i] = false;
+			}
 		}
 
 		// We've written the Xbox constants
@@ -8605,16 +8609,24 @@ xbox::void_xt WINAPI xbox::EMUPATCH(D3DDevice_GetVertexShaderConstant)
 
 	// Xbox vertex shader constants range from -96 to 95
 	// The host does not support negative, so we adjust to 0..191
+	if (Register < -X_D3DSCM_CORRECTION || Register >= X_D3DVS_CONSTREG_COUNT - X_D3DSCM_CORRECTION) {
+		LOG_TEST_CASE("Vertex shader constant register out of bounds");
+		return;
+	}
 	Register += X_D3DSCM_CORRECTION;
+	const DWORD availableConstantCount = X_D3DVS_CONSTREG_COUNT - Register;
+	if (ConstantCount > availableConstantCount) {
+		LOG_TEST_CASE("Vertex shader constant count out of bounds");
+		ConstantCount = availableConstantCount;
+	}
+	if (ConstantCount == 0) {
+		return;
+	}
 
-	HRESULT hRet = g_pD3DDevice->GetVertexShaderConstantF
-    (
-        Register,
-        (float*)pConstantData, // TODO : Validate this work correctly under D3D9
-        ConstantCount
-    );
-
-	DEBUG_D3DRESULT(hRet, "g_pD3DDevice->GetVertexShaderConstant");
+	// Host registers can still contain the previous draw or fixed-function state.
+	// Return the guest constants most recently set in HLE instead.
+	memcpy(pConstantData, CxbxGetHleVertexShaderConstants() + Register * 4,
+		ConstantCount * sizeof(float) * 4);
 }
 
 // ******************************************************************
@@ -8686,9 +8698,6 @@ xbox::void_xt WINAPI xbox::EMUPATCH(D3DDevice_RunVertexStateShader)
 		return;
 	}
 
-	NV2AState* dev = g_NV2A->GetDeviceState();
-	PGRAPHState* pg = &(dev->pgraph);
-
 	Nv2aVshProgram program = {}; // Note: This nulls program.steps
 	// TODO : Retain program globally and perform nv2a_vsh_parse_program only when
 	//        the address-range we're about to emulate was modified since last parse.
@@ -8706,14 +8715,13 @@ xbox::void_xt WINAPI xbox::EMUPATCH(D3DDevice_RunVertexStateShader)
 
 	Nv2aVshCPUXVSSExecutionState state_linkage;
 	Nv2aVshExecutionState state = nv2a_vsh_emu_initialize_xss_execution_state(
-		&state_linkage, (float*)pg->vsh_constants); // Note : This wil memset(state_linkage, 0)
+		&state_linkage, CxbxGetHleVertexShaderConstants()); // This zeros state_linkage.
 	if (pData != nullptr)
 		//if pData != nullptr, then it contains v0.xyzw, we shall copy the binary content directly.
 		memcpy(state_linkage.input_regs, pData, sizeof(state_linkage.input_regs));
 
-	nv2a_vsh_emu_execute_track_context_writes(&state, &program, pg->vsh_constants_dirty);
-	// Note: Above emulation's primary purpose is to update pg->vsh_constants and pg->vsh_constants_dirty
-	// therefor, nothing else needs to be done here, other than to cleanup
+	nv2a_vsh_emu_execute_track_context_writes(&state, &program, CxbxGetHleVertexShaderConstantsDirtyFlags());
+	// The state shader updates HLE constants and marks its writes dirty for host uploads.
 
 	nv2a_vsh_program_destroy(&program); // Note: program.steps will be free'ed
 }

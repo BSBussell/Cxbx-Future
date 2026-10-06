@@ -253,4 +253,7 @@ extern void CxbxImpl_SetVertexShaderInput(DWORD Handle, UINT StreamCount, xbox::
 extern void CxbxImpl_SetVertexShaderConstant(INT Register, PVOID pConstantData, DWORD ConstantCount);
 extern void CxbxImpl_DeleteVertexShader(DWORD Handle);
 extern void CxbxVertexShaderSetFlags();
+// Mutable for vertex state shader execution; writes must mark the matching dirty flags.
+extern float* CxbxGetHleVertexShaderConstants(); // X_D3DVS_CONSTREG_COUNT float4's
+extern bool* CxbxGetHleVertexShaderConstantsDirtyFlags(); // X_D3DVS_CONSTREG_COUNT flags
 #endif
