@@ -24,7 +24,7 @@ My assessment is that this is a reasonable fix to allow for speedrunning, bingo,
 
 Removing a white flash improves accessibility and visibility; that is the goal behind this patch. The flashbang is an obnoxious visual error, and for users sensitive to flashing visuals, it can be uncomfortable or headache-inducing.
 
-While I have not explicitly ruled out every possible gameplay regression (vs mode has not been tested 🙂↕️), I don't believe that should automatically disqualify this patch. Given that it is scoped to how rendering state is stored, uploaded, and read back, I believe that this patched build should be approved for JSRF speedrunning.
+While I have not explicitly ruled out every possible gameplay regression (vs mode has not been tested 🙂‍↕️), I don't believe that should automatically disqualify this patch. Given that it is scoped to how rendering state is stored, uploaded, and read back, I believe that this patched build should be approved for JSRF speedrunning.
 
 ## Technical breakdown for nerds 🫵!
 
