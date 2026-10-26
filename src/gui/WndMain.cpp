@@ -54,6 +54,7 @@
 #include "Shlwapi.h"
 
 #undef GetSystemMetrics // Force remove DirectX 8's multimon.h defined function (redirect to xGetSystemMetrics).
+#undef MonitorFromWindow // Use the native monitor API rather than the legacy multimon stub.
 #include <WinUser.h> // For GetSystemMetrics
 
 #include <io.h>
@@ -139,35 +140,82 @@ void WndMain::InitializeSettings()
 #define TIMERID_ACTIVE_EMULATION 0
 #define TIMERID_LED 1
 
+static BOOL AdjustWindowRectForCurrentDpi(HWND hwnd, RECT* rect)
+{
+	const DWORD style = GetWindowLong(hwnd, GWL_STYLE);
+	const DWORD extendedStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+	const BOOL hasMenu = GetMenu(hwnd) != nullptr;
+	// Resolve these dynamically so older hosts and Wine can use the legacy path.
+	using GetDpiForWindowFunction = UINT(WINAPI*)(HWND);
+	using AdjustWindowRectExForDpiFunction = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+	static const auto getDpiForWindow = reinterpret_cast<GetDpiForWindowFunction>(
+		GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+	static const auto adjustForDpi = reinterpret_cast<AdjustWindowRectExForDpiFunction>(
+		GetProcAddress(GetModuleHandleW(L"user32.dll"), "AdjustWindowRectExForDpi"));
+	if (getDpiForWindow && adjustForDpi) {
+		return adjustForDpi(rect, style, hasMenu, extendedStyle, getDpiForWindow(hwnd));
+	}
+	return AdjustWindowRectEx(rect, style, hasMenu, extendedStyle);
+}
+
+void WndMain::FitRenderWindow(HWND hwnd)
+{
+	// A detached borderless render window owns its monitor-sized placement.
+	if (!m_hwndChild || GetParent(m_hwndChild) != hwnd ||
+		!(GetWindowLongPtr(m_hwndChild, GWL_STYLE) & WS_CHILD)) {
+		return;
+	}
+	RECT client;
+	if (GetClientRect(hwnd, &client) && client.right > 0 && client.bottom > 0) {
+		// The child belongs to the emulator's message thread. Queue the resize to
+		// avoid blocking that thread while it sends creation/focus messages here.
+		if (!SetWindowPos(m_hwndChild, nullptr, 0, 0, client.right, client.bottom,
+			SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)) {
+			EmuLog(LOG_LEVEL::WARNING, "Cannot fit render window to launcher: %lu", GetLastError());
+		}
+	}
+}
+
 void WndMain::ResizeWindow(HWND hwnd, bool bForGUI)
 {
-	RECT desktopRect;
-	RECT windowRect;
-
 	// Set the window size back to it's GUI dimensions
 	m_w = 640;
 	m_h = 480;
 	if (!bForGUI) {
 		// For emulation, get the configured window dimensions
-		Settings::s_video XBVideoConf;
-		g_EmuShared->GetVideoSettings(&XBVideoConf);
-
-		const char* resolution = XBVideoConf.szVideoResolution;
-		if (2 != sscanf(resolution, "%d x %d", &m_w, &m_h)) {
-			EmuLog(LOG_LEVEL::DEBUG, "Couldn't parse resolution : %s.", resolution);
+		const char* resolution = g_Settings->m_video.szVideoResolution;
+		int width, height;
+		if (sscanf(resolution, "%d x %d", &width, &height) == 2 && width > 0 && height > 0) {
+			m_w = width;
+			m_h = height;
+		}
+		else {
+			EmuLog(LOG_LEVEL::INFO, "Window size: resolution '%s' uses the 640x480 default", resolution);
 		}
 	}
 
-	// TODO : Acknowledge DPI scaling here
-	GetWindowRect(GetDesktopWindow(), &desktopRect);
+	const int requestedWidth = m_w;
+	const int requestedHeight = m_h;
+	MONITORINFO monitor = { sizeof(MONITORINFO) };
+	if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+		EmuLog(LOG_LEVEL::WARNING, "Cannot determine window monitor: %lu", GetLastError());
+		return;
+	}
+	const RECT& workArea = monitor.rcWork;
+	RECT windowRect = { 0, 0, m_w, m_h };
+	if (!AdjustWindowRectForCurrentDpi(hwnd, &windowRect)) {
+		EmuLog(LOG_LEVEL::WARNING, "Cannot calculate window frame: %lu", GetLastError());
+		return;
+	}
 
-	// Limit width/height to desktop resolution
-	int dWidth = desktopRect.right - desktopRect.left;
-	int dHeight = desktopRect.bottom - desktopRect.top;
-	if (m_w > dWidth)
-		m_w = dWidth;
-	if (m_h > dHeight)
-		m_h = dHeight;
+	// The configured resolution is the client size in physical pixels. Include
+	// title/menu borders before fitting the outer window to this monitor's work area.
+	int windowWidth = windowRect.right - windowRect.left;
+	int windowHeight = windowRect.bottom - windowRect.top;
+	const int availableWidth = workArea.right - workArea.left;
+	const int availableHeight = workArea.bottom - workArea.top;
+	if (windowWidth > availableWidth) windowWidth = availableWidth;
+	if (windowHeight > availableHeight) windowHeight = availableHeight;
 
 	if (bForGUI && m_prevWindowLoc.x != -1 && m_prevWindowLoc.y != -1) {
 		// Restore to previous Window location
@@ -175,21 +223,26 @@ void WndMain::ResizeWindow(HWND hwnd, bool bForGUI)
 		m_y = m_prevWindowLoc.y;
 	}
 	else {
-		// Center to desktop
-		m_x = desktopRect.left + ((dWidth - m_w) / 2);
-		m_y = desktopRect.top + ((dHeight - m_h) / 2);
+		m_x = workArea.left + (availableWidth - windowWidth) / 2;
+		m_y = workArea.top + (availableHeight - windowHeight) / 2;
 	}
 
-	// Resize the window so it's client area can contain the requested resolution
-	windowRect = { m_x, m_y, m_x + m_w, m_y + m_h };
-	AdjustWindowRectEx(&windowRect, GetWindowLong(hwnd, GWL_STYLE), GetMenu(hwnd) != NULL, GetWindowLong(hwnd, GWL_EXSTYLE));
-	// TODO : For DPI screens, replace AdjustWindowRectEx by DwmGetWindowAttribute using DWMWA_EXTENDED_FRAME_BOUNDS
-	SetWindowPos(hwnd, 0,
-		windowRect.left,
-		windowRect.top,
-		windowRect.right - windowRect.left,
-		windowRect.bottom - windowRect.top,
-		SWP_NOOWNERZORDER | SWP_NOZORDER);
+	if (m_x < workArea.left) m_x = workArea.left;
+	if (m_y < workArea.top) m_y = workArea.top;
+	if (m_x + windowWidth > workArea.right) m_x = workArea.right - windowWidth;
+	if (m_y + windowHeight > workArea.bottom) m_y = workArea.bottom - windowHeight;
+	if (!SetWindowPos(hwnd, nullptr, m_x, m_y, windowWidth, windowHeight,
+		SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE)) {
+		EmuLog(LOG_LEVEL::WARNING, "Cannot resize launcher: %lu", GetLastError());
+		return;
+	}
+	RECT client;
+	if (GetClientRect(hwnd, &client)) {
+		m_w = client.right;
+		m_h = client.bottom;
+		EmuLog(LOG_LEVEL::INFO, "Window size: requested=%dx%d client=%dx%d work_area=%dx%d gui=%u",
+			requestedWidth, requestedHeight, m_w, m_h, availableWidth, availableHeight, bForGUI);
+	}
 }
 
 WndMain::WndMain(HINSTANCE x_hInstance) :
@@ -254,6 +307,28 @@ LRESULT CALLBACK WndMain::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 {
     switch(uMsg)
     {
+        case WM_SIZE:
+        {
+            if (wParam != SIZE_MINIMIZED) {
+                RECT client;
+                if (GetClientRect(hwnd, &client)) {
+                    m_w = client.right;
+                    m_h = client.bottom;
+                }
+                FitRenderWindow(hwnd);
+            }
+            return 0;
+        }
+
+        case WM_DPICHANGED:
+        {
+            const RECT& suggested = *reinterpret_cast<const RECT*>(lParam);
+            SetWindowPos(hwnd, nullptr, suggested.left, suggested.top,
+                suggested.right - suggested.left, suggested.bottom - suggested.top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
+
         case WM_CREATE:
         {
             // initialize menu
@@ -341,6 +416,7 @@ LRESULT CALLBACK WndMain::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lP
 					else {
 						m_hwndChild = GetWindow(hwnd, GW_CHILD);
 					}
+					FitRenderWindow(hwnd);
 				}
 				break;
 

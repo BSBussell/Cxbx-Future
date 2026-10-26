@@ -2,6 +2,9 @@
 [Bb]uild/
 [Bb]uild-*/
 
+# Local historical packages, experiments, and archived build outputs
+/references/
+
 # CLion
 .idea/
 cmake-build-*/

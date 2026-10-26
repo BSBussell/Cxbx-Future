@@ -81,6 +81,10 @@
 
 #include "nv2a_vsh_emulator.h"
 
+// Legacy multimon.h redirects this API to an unlinked Windows 95 stub.
+// Supported hosts provide MonitorFromWindow natively.
+#undef MonitorFromWindow
+
 using namespace Microsoft::WRL;
 
 XboxRenderStateConverter XboxRenderStates;
@@ -108,7 +112,17 @@ static bool                         g_bSupportsFormatTextureDepthStencil[xbox::X
 static bool                         g_bSupportsFormatVolumeTexture[xbox::X_D3DFMT_LIN_R8G8B8A8 + 1]; // Does device support surface format?
 static bool                         g_bSupportsFormatCubeTexture[xbox::X_D3DFMT_LIN_R8G8B8A8 + 1]; // Does device support surface format?
 static HBRUSH                       g_hBgBrush = NULL; // Background Brush
-static bool                         g_bIsFauxFullscreen = false;
+static bool                         g_bIsBorderless = false;
+
+// Owned by the render window's message thread. Child windows restore into the
+// launcher's current client area; standalone windows restore their placement.
+struct WindowedPlacement {
+    HWND parent = nullptr;
+    LONG_PTR style = 0;
+    WINDOWPLACEMENT placement = { sizeof(WINDOWPLACEMENT) };
+};
+static WindowedPlacement g_windowedPlacement;
+static void ToggleBorderless(HWND hWnd);
 static DWORD						g_OverlaySwap = 0; // Set in D3DDevice_UpdateOverlay
 static int                          g_iWireframe = 0; // wireframe toggle
 static bool                         g_bHack_UnlockFramerate = false; // ignore the xbox presentation interval
@@ -1530,8 +1544,12 @@ static DWORD WINAPI EmuRenderWindow(LPVOID lpParam)
 		DWORD dwStyle = WS_POPUP;
 		RECT windowRect = { 0 };
 
-		// Obtain the selected resolution from GUI or full desktop screen in kernel mode.
-		if (!GetWindowRect(hwndParent, &windowRect)) {
+		// Child coordinates and dimensions belong to the parent's client area.
+		// Outer screen coordinates include the launcher's title bar and menu.
+		const bool embedded = CxbxKrnl_hEmuParent && !g_XBVideo.bFullScreen;
+		const BOOL gotBounds = embedded ? GetClientRect(hwndParent, &windowRect)
+			: GetWindowRect(hwndParent, &windowRect);
+		if (!gotBounds) {
 			// Fall back resolution if failed
 			windowRect = { 0, 0, 640, 480 };
 		}
@@ -1562,12 +1580,29 @@ static DWORD WINAPI EmuRenderWindow(LPVOID lpParam)
             hwndParent, nullptr, hActiveModule, // Was GetModuleHandle(nullptr),
             nullptr
         );
+        if (!g_hEmuWindow) {
+            CxbxrAbort("Cannot create render window: %lu", GetLastError());
+        }
     }
 
-    ShowWindow(g_hEmuWindow, ((CxbxKrnl_hEmuParent == 0) || g_XBVideo.bFullScreen) ? SW_SHOWDEFAULT : SW_SHOWMAXIMIZED);
+    // Embedded windows already have the exact client bounds; maximizing a child
+    // delegates its frame sizing to Windows and can extend it beyond the client.
+    ShowWindow(g_hEmuWindow, CxbxKrnl_hEmuParent && !g_XBVideo.bFullScreen ? SW_SHOW : SW_SHOWDEFAULT);
     UpdateWindow(g_hEmuWindow);
 
-    if(!g_XBVideo.bFullScreen && (CxbxKrnl_hEmuParent != NULL))
+    RECT renderClient = {};
+    RECT parentClient = {};
+    GetClientRect(g_hEmuWindow, &renderClient);
+    if (CxbxKrnl_hEmuParent) GetClientRect(CxbxKrnl_hEmuParent, &parentClient);
+    EmuLog(LOG_LEVEL::INFO, "Render window: configured='%s' client=%ldx%ld parent_client=%ldx%ld fullscreen=%u borderless=%u",
+        g_XBVideo.szVideoResolution, renderClient.right, renderClient.bottom,
+        parentClient.right, parentClient.bottom, g_XBVideo.bFullScreen, g_XBVideo.bBorderless);
+
+    if (g_XBVideo.bBorderless && !g_XBVideo.bFullScreen) {
+        ToggleBorderless(g_hEmuWindow);
+    }
+
+    if(!g_XBVideo.bFullScreen && !g_bIsBorderless && (CxbxKrnl_hEmuParent != NULL))
     {
         SetFocus(CxbxKrnl_hEmuParent);
     }
@@ -1599,49 +1634,98 @@ static DWORD WINAPI EmuRenderWindow(LPVOID lpParam)
     return 0;
 }
 
-// simple helper function
-void ToggleFauxFullscreen(HWND hWnd)
+// Query bounds in the render window's current DPI context, after any reparenting.
+static bool FitBorderlessWindowToMonitor(HWND hWnd, HMONITOR hMonitor)
 {
-    if(g_XBVideo.bFullScreen) {
+    MONITORINFO monitor = { sizeof(MONITORINFO) };
+    if (!GetMonitorInfoW(hMonitor, &monitor)) {
+        EmuLog(LOG_LEVEL::WARNING, "Cannot determine borderless monitor: %lu", GetLastError());
+        return false;
+    }
+
+    const RECT& bounds = monitor.rcMonitor;
+    if (!SetWindowPos(hWnd, HWND_NOTOPMOST, bounds.left, bounds.top,
+        bounds.right - bounds.left, bounds.bottom - bounds.top,
+        SWP_FRAMECHANGED | SWP_SHOWWINDOW)) {
+        EmuLog(LOG_LEVEL::WARNING, "Cannot size borderless window: %lu", GetLastError());
+        return false;
+    }
+    return true;
+}
+
+// Borderless keeps the D3D device windowed; only the host window changes.
+static void ToggleBorderless(HWND hWnd)
+{
+    if (g_XBVideo.bFullScreen) {
         return;
     }
 
-    // Remember last known position and style before go into faux full screen mode.
-    static RECT lRect = {};
-    static LONG gwl_style = {};
+    CxbxReleaseCursor();
+    if (!g_bIsBorderless) {
+        // Retain the selected monitor across detachment; re-query its bounds afterwards.
+        const HMONITOR hMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
 
-    // Require to toggle before start process due to WM_SETFOCUS will get trigger earlier.
-    g_bIsFauxFullscreen = !g_bIsFauxFullscreen;
-    if (g_bIsFauxFullscreen) {
-        GetWindowRect(hWnd, &lRect);
-        gwl_style = GetWindowLong(hWnd, GWL_STYLE);
-        SetWindowLong(hWnd, GWL_STYLE, WS_POPUP);
-        // NOTE: Window style must be set before call SetParent.
-        if (CxbxKrnl_hEmuParent) {
-            LONG parent_style = gwl_style & ~WS_CHILD;
-            parent_style |= WS_POPUP;
-            SetWindowLong(hWnd, GWL_STYLE, gwl_style);
-            SetParent(hWnd, NULL);
+        g_windowedPlacement.style = GetWindowLongPtr(hWnd, GWL_STYLE);
+        g_windowedPlacement.parent = (g_windowedPlacement.style & WS_CHILD) ? GetParent(hWnd) : nullptr;
+        if (!GetWindowPlacement(hWnd, &g_windowedPlacement.placement)) {
+            return;
         }
-        SetWindowPos(hWnd, HWND_TOPMOST, lRect.left, lRect.top, 0, 0, SWP_NOSIZE);
-        ShowWindow(hWnd, SW_MAXIMIZE);
+
+        // Set the state first because changing parents/styles sends focus messages.
+        g_bIsBorderless = true;
+        ShowWindow(hWnd, SW_HIDE);
+        // Clear WS_CHILD before detaching, as required by SetParent.
+        SetWindowLongPtr(hWnd, GWL_STYLE, WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX);
+        if (g_windowedPlacement.parent) {
+            SetLastError(ERROR_SUCCESS);
+            if (!SetParent(hWnd, nullptr) && GetLastError() != ERROR_SUCCESS) {
+                EmuLog(LOG_LEVEL::WARNING, "Cannot detach render window: %lu", GetLastError());
+                g_bIsBorderless = false;
+                SetWindowLongPtr(hWnd, GWL_STYLE, g_windowedPlacement.style);
+                ShowWindow(hWnd, SW_SHOW);
+                return;
+            }
+        }
+        FitBorderlessWindowToMonitor(hWnd, hMonitor);
+
+        SetFocus(hWnd);
     }
     else {
-        SetWindowLong(hWnd, GWL_STYLE, gwl_style);
-        if(CxbxKrnl_hEmuParent) {
-            // NOTE: This call makes sure that emulation rendering will reappear back into the main window after leaving "faux fullscreen" on non-primary displays.
-            SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_HIDEWINDOW);
-
-            // NOTE: Window style must be set before call SetParent.
-            SetParent(hWnd, CxbxKrnl_hEmuParent);
-            ShowWindow(hWnd, SW_MAXIMIZE);
-            SetFocus(CxbxKrnl_hEmuParent);
+        ShowWindow(hWnd, SW_HIDE);
+        SetWindowLongPtr(hWnd, GWL_STYLE, g_windowedPlacement.style & ~WS_VISIBLE);
+        if (g_windowedPlacement.parent) {
+            SetLastError(ERROR_SUCCESS);
+            if (!SetParent(hWnd, g_windowedPlacement.parent) && GetLastError() != ERROR_SUCCESS) {
+                EmuLog(LOG_LEVEL::WARNING, "Cannot reattach render window: %lu", GetLastError());
+                SetWindowLongPtr(hWnd, GWL_STYLE, WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX);
+                ShowWindow(hWnd, SW_SHOW);
+                return;
+            }
+        }
+        g_bIsBorderless = false;
+        SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        if (g_windowedPlacement.parent) {
+            // The launcher may have moved, resized, or minimized while detached.
+            if (IsIconic(g_windowedPlacement.parent)) {
+                ShowWindow(g_windowedPlacement.parent, SW_RESTORE);
+            }
+            RECT client;
+            if (GetClientRect(g_windowedPlacement.parent, &client)) {
+                SetWindowPos(hWnd, nullptr, 0, 0, client.right, client.bottom,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            ShowWindow(hWnd, SW_SHOW);
+            SetFocus(g_windowedPlacement.parent);
         }
         else {
-            ShowWindow(hWnd, SW_RESTORE);
-            SetWindowPos(hWnd, HWND_NOTOPMOST, lRect.left, lRect.top, lRect.right - lRect.left, lRect.bottom - lRect.top, 0);
+            SetWindowPlacement(hWnd, &g_windowedPlacement.placement);
+            ShowWindow(hWnd, SW_SHOW);
             SetFocus(hWnd);
         }
+    }
+    if (g_bClipCursor) {
+        CxbxClipCursor(hWnd);
     }
 }
 
@@ -1718,9 +1802,11 @@ static LRESULT WINAPI EmuMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_SYSKEYDOWN:
         {
-            if(wParam == VK_RETURN)
+            if(wParam == VK_RETURN && (lParam & (1L << 29)))
             {
-                ToggleFauxFullscreen(hWnd);
+                if (!(lParam & (1L << 30))) {
+                    ToggleBorderless(hWnd);
+                }
             }
             else if(wParam == VK_F4)
             {
@@ -1730,7 +1816,9 @@ static LRESULT WINAPI EmuMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             // Source: https://docs.microsoft.com/en-us/windows/desktop/inputdev/wm-syskeydown
             else if(wParam == VK_F10)
             {
-                ToggleFauxFullscreen(hWnd);
+                if (!(lParam & (1L << 30))) {
+                    ToggleBorderless(hWnd);
+                }
             }
             else
             {
@@ -1741,16 +1829,16 @@ static LRESULT WINAPI EmuMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_KEYDOWN:
         {
-            /*! disable fullscreen if we are set to faux mode, and faux fullscreen is active */
+            // Escape returns borderless to windowed mode; exclusive fullscreen exits emulation.
             if(wParam == VK_ESCAPE)
             {
                 if(g_XBVideo.bFullScreen)
                 {
                     SendMessage(hWnd, WM_CLOSE, 0, 0);
                 }
-                else if(g_bIsFauxFullscreen)
+                else if(g_bIsBorderless)
                 {
-                    ToggleFauxFullscreen(hWnd);
+                    ToggleBorderless(hWnd);
                 }
             }
             else if (wParam == VK_F1)
@@ -1808,6 +1896,29 @@ static LRESULT WINAPI EmuMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
             else
             {
                 return DefWindowProc(hWnd, msg, wParam, lParam);
+            }
+        }
+        break;
+
+        case WM_DPICHANGED:
+        {
+            if (g_bIsBorderless) {
+                FitBorderlessWindowToMonitor(hWnd, MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST));
+            }
+            else if (!(GetWindowLongPtr(hWnd, GWL_STYLE) & WS_CHILD)) {
+                // Embedded windows follow their parent; standalone windows accept the DPI resize.
+                const RECT& suggested = *reinterpret_cast<const RECT*>(lParam);
+                SetWindowPos(hWnd, nullptr, suggested.left, suggested.top,
+                    suggested.right - suggested.left, suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            return 0;
+        }
+
+        case WM_DISPLAYCHANGE:
+        {
+            if (g_bIsBorderless) {
+                FitBorderlessWindowToMonitor(hWnd, MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST));
             }
         }
         break;
@@ -1878,7 +1989,7 @@ static LRESULT WINAPI EmuMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_SETFOCUS:
         {
-            if(CxbxKrnl_hEmuParent && !g_XBVideo.bFullScreen && !g_bIsFauxFullscreen)
+            if(CxbxKrnl_hEmuParent && !g_XBVideo.bFullScreen && !g_bIsBorderless)
             {
                 SetFocus(CxbxKrnl_hEmuParent);
             }
@@ -1887,7 +1998,7 @@ static LRESULT WINAPI EmuMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_SETCURSOR:
         {
-            if(g_XBVideo.bFullScreen || g_bIsFauxFullscreen)
+            if((g_XBVideo.bFullScreen || g_bIsBorderless) && LOWORD(lParam) == HTCLIENT)
             {
                 SetCursor(NULL);
                 return S_OK; // = Is not part of D3D8 handling.

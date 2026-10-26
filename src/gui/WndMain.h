@@ -89,6 +89,7 @@ class WndMain : public Wnd
 		// * resize the main window for either GUI or emulation
 		// ******************************************************************
 		void ResizeWindow(HWND hwnd, bool bForGUI);
+		void FitRenderWindow(HWND hwnd);
 
         // ******************************************************************
         // * after an xbe is loaded, some things must be updated

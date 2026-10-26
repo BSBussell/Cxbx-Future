@@ -64,6 +64,13 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
  )
 endif()
 
+# Keep launcher and render-process coordinates in physical pixels on mixed-DPI monitors.
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+ # Let CMake merge this with its generated application manifest before embedding.
+ target_sources(cxbxr-ldr PRIVATE
+  "${CXBXR_ROOT_DIR}/src/common/win32/CxbxDpi.manifest")
+endif()
+
 target_link_libraries(cxbxr-ldr
  PUBLIC kernel32.lib
 )

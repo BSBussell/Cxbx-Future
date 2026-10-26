@@ -111,6 +111,7 @@ static struct {
 	const char* Direct3DDevice = "Direct3DDevice";
 	const char* VSync = "VSync";
 	const char* FullScreen = "FullScreen";
+	const char* Borderless = "Borderless";
 	const char* MaintainAspect = "MaintainAspect";
 	const char* RenderResolution = "RenderResolution";
 } sect_video_keys;
@@ -415,6 +416,7 @@ bool Settings::LoadConfig()
 	m_video.direct3DDevice = m_si.GetLongValue(section_video, sect_video_keys.Direct3DDevice, /*Default=*/0);
 	m_video.bVSync = m_si.GetBoolValue(section_video, sect_video_keys.VSync, /*Default=*/false);
 	m_video.bFullScreen = m_si.GetBoolValue(section_video, sect_video_keys.FullScreen, /*Default=*/false);
+	m_video.bBorderless = !m_video.bFullScreen && m_si.GetBoolValue(section_video, sect_video_keys.Borderless, /*Default=*/false);
 	m_video.bMaintainAspect = m_si.GetBoolValue(section_video, sect_video_keys.MaintainAspect, /*Default=*/true);
 	m_video.renderScaleFactor = m_si.GetLongValue(section_video, sect_video_keys.RenderResolution, /*Default=*/1);
 
@@ -619,6 +621,7 @@ bool Settings::Save(std::string file_path)
 	m_si.SetLongValue(section_video, sect_video_keys.Direct3DDevice, m_video.direct3DDevice, nullptr, true, true);
 	m_si.SetBoolValue(section_video, sect_video_keys.VSync, m_video.bVSync, nullptr, true);
 	m_si.SetBoolValue(section_video, sect_video_keys.FullScreen, m_video.bFullScreen, nullptr, true);
+	m_si.SetBoolValue(section_video, sect_video_keys.Borderless, !m_video.bFullScreen && m_video.bBorderless, nullptr, true);
 	m_si.SetBoolValue(section_video, sect_video_keys.MaintainAspect, m_video.bMaintainAspect, nullptr, true);
 	m_si.SetLongValue(section_video, sect_video_keys.RenderResolution, m_video.renderScaleFactor, nullptr, false, true);
 

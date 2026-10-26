@@ -134,7 +134,7 @@
 #define IDC_BTN_COCKPIT_HATCH           1029
 #define IDC_BTN_IGNITION                1030
 #define IDC_BTN_START                   1031
-#define IDC_CV_FULLSCREEN               1032
+#define IDC_VC_DISPLAY_MODE             1032
 #define IDC_BTN_ZOOM_IN                 1033
 #define IDC_BTN_ZOOM_OUT                1034
 #define IDC_BTN_MODE_SELECT             1035

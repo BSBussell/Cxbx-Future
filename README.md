@@ -17,7 +17,7 @@ There are other usability changes I'd like to make, but I'm taking this one patc
 ### Changes and their writeups
 
 - **[White-flash fix](docs/Future/white-flash-fix.md):** Prevents the intermittent white flashes caused by shared rendering state. The writeup explains the flashbang problem, why I think the fix improves the JSRF experience, and the technical changes and testing behind it.
-- More, maybe...
+- **[Borderless fullscreen](docs/Future/borderless-fullscreen.md):** Adds a saved display-mode option and monitor-sized borderless window handling, with keyboard switching back to windowed mode.
 
 Every feature added to this fork should have a writeup in **[docs/Future/](docs/Future/README.md)**: what changed, why I think it improves the UX, how it works, and what we've tested. That also means being clear about limitations and any competitive-integrity considerations.
 

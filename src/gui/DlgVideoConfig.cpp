@@ -63,6 +63,9 @@ static HWND g_hVideoResolution = NULL;
 /*! handle to scale factor window*/
 static HWND g_hRenderResolution = NULL;
 
+// The persisted booleans retain compatibility with older settings and shared memory.
+enum class DisplayMode { Windowed, Borderless, ExclusiveFullscreen };
+
 void ShowVideoConfig(HWND hwnd)
 {
     /*! reset changes flag */
@@ -147,7 +150,13 @@ INT_PTR CALLBACK DlgVideoConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 
             /*! check appropriate options */
             {
-                SendMessage(GetDlgItem(hWndDlg, IDC_CV_FULLSCREEN), BM_SETCHECK, (WPARAM)g_XBVideo.bFullScreen, 0);
+                HWND displayMode = GetDlgItem(hWndDlg, IDC_VC_DISPLAY_MODE);
+                SendMessage(displayMode, CB_ADDSTRING, 0, (LPARAM)"Windowed");
+                SendMessage(displayMode, CB_ADDSTRING, 0, (LPARAM)"Borderless fullscreen");
+                SendMessage(displayMode, CB_ADDSTRING, 0, (LPARAM)"Exclusive fullscreen");
+                DisplayMode selectedMode = g_XBVideo.bFullScreen ? DisplayMode::ExclusiveFullscreen
+                    : (g_XBVideo.bBorderless ? DisplayMode::Borderless : DisplayMode::Windowed);
+                SendMessage(displayMode, CB_SETCURSEL, static_cast<WPARAM>(selectedMode), 0);
 
                 SendMessage(GetDlgItem(hWndDlg, IDC_CV_VSYNC), BM_SETCHECK, (WPARAM)g_XBVideo.bVSync, 0);
 
@@ -216,11 +225,11 @@ INT_PTR CALLBACK DlgVideoConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
 
                     /*! save fullscreen/vsync/YUV options */
                     {
-                        LRESULT lRet = SendMessage(GetDlgItem(hWndDlg, IDC_CV_FULLSCREEN), BM_GETCHECK, 0, 0);
+                        LRESULT selectedMode = SendDlgItemMessage(hWndDlg, IDC_VC_DISPLAY_MODE, CB_GETCURSEL, 0, 0);
+                        g_XBVideo.bFullScreen = selectedMode == static_cast<LRESULT>(DisplayMode::ExclusiveFullscreen);
+                        g_XBVideo.bBorderless = selectedMode == static_cast<LRESULT>(DisplayMode::Borderless);
 
-                        g_XBVideo.bFullScreen = (lRet == BST_CHECKED);
-
-                        lRet = SendMessage(GetDlgItem(hWndDlg, IDC_CV_VSYNC), BM_GETCHECK, 0, 0);
+                        LRESULT lRet = SendMessage(GetDlgItem(hWndDlg, IDC_CV_VSYNC), BM_GETCHECK, 0, 0);
 
                         g_XBVideo.bVSync = (lRet == BST_CHECKED);
 
@@ -235,6 +244,20 @@ INT_PTR CALLBACK DlgVideoConfigProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPAR
                     EndDialog(hWndDlg, wParam);
                 }
                 break;
+
+                case IDC_VC_DISPLAY_MODE:
+                case IDC_VC_VIDEO_RESOLUTION:
+                    if (HIWORD(wParam) == CBN_SELCHANGE) {
+                        g_bHasChanges = TRUE;
+                    }
+                    break;
+
+                case IDC_CV_VSYNC:
+                case IDC_CV_MAINTAINASPECT:
+                    if (HIWORD(wParam) == BN_CLICKED) {
+                        g_bHasChanges = TRUE;
+                    }
+                    break;
 
                 case IDC_VC_DISPLAY_ADAPTER:
                 {

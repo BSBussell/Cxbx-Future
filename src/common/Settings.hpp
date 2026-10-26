@@ -119,7 +119,7 @@ public:
 		bool bVSync;
 		bool bFullScreen;
 		bool bMaintainAspect;
-        bool Reserved3;
+		bool bBorderless = false; // Uses a reserved byte; keep the shared-memory layout unchanged.
 		int  renderScaleFactor = 1;
 		int  Reserved99[9] = { 0 };
 	} m_video;

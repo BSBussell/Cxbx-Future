@@ -169,6 +169,13 @@ set(WINS_LIB
  Iphlpapi
 )
 
+# Keep launcher and render-process coordinates in physical pixels on mixed-DPI monitors.
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+ # Let CMake merge this with its generated application manifest before embedding.
+ target_sources(cxbx PRIVATE
+  "${CXBXR_ROOT_DIR}/src/common/win32/CxbxDpi.manifest")
+endif()
+
 target_link_libraries(cxbx
  PUBLIC libXbSymbolDatabase
  subhook
