@@ -6,5 +6,5 @@ This is where each Cxbx-Future feature gets its own writeup: what changed, why I
 
 | Feature | Why I want it | Writeup |
 | --- | --- | --- |
-| White-flash fix | Get rid of the unintended flashbangs and improve visibility and comfort while playing. | [Explanation, implementation diff, and testing](white-flash-fix.md) |
-| Borderless fullscreen | Fill the screen while keeping desktop window switching convenient. | [Implementation and validation](borderless-fullscreen.md) |
+| White-flash fix | Get rid of the unintended flashbangs and improve visibility and comfort while playing. | [Explanation, implementation diff, etc.](white-flash-fix.md) |
+| Borderless fullscreen | Fill the screen while keeping desktop window switching convenient. | [Implementation](borderless-fullscreen.md) |
