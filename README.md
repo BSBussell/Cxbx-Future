@@ -10,17 +10,16 @@
 
 ## Future Patches!
 
-Cxbx-Future keeps the September 2022 [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) source base and builds on it with small, focused fixes for JSRF.
+Cxbx-Future keeps the September 2022 [Cxbx-Reloaded](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded) source base and builds on it with small, scoped fixes for JSRF.
 The first priority is getting rid of the "white flash" bug, reported on AMD systems among others.
-There are other usability changes I'd like to make, but I'm taking this one patch at a time.
+There are other usability changes I'd like to make, but I'm trying to take this one thing at a time.
 
 ### Changes and their writeups
 
 - **[White-flash fix](docs/Future/white-flash-fix.md):** Prevents the intermittent white flashes caused by shared rendering state. The writeup explains the flashbang problem, why I think the fix improves the JSRF experience, and the technical changes and testing behind it.
-- **[Borderless fullscreen](docs/Future/borderless-fullscreen.md):** Adds a saved display-mode option and monitor-sized borderless window handling, with keyboard switching back to windowed mode.
+- **[Borderless fullscreen](docs/Future/borderless-fullscreen.md):** Adds a new display-mode option and monitor-sized borderless window handling, with alt-tab switching back to windowed mode.
 
-Every feature added to this fork should have a writeup in **[docs/Future/](docs/Future/README.md)**: what changed, why I think it improves the UX, how it works, and what we've tested. That also means being clear about limitations and any competitive-integrity considerations.
-
+Every feature added to this fork should have a writeup in **[docs/Future/](docs/Future/README.md)**: what changed, why I think it improves the UX, how it works, and whats been tested.
 ## System Requirements
 
 ### Minimum
